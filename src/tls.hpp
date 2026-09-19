@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace zc {
 
@@ -13,5 +14,8 @@ struct TlsClientHello {
 };
 
 TlsClientHello parse_client_hello(const std::uint8_t* data, std::size_t len);
+
+std::string client_hello_sni(const std::uint8_t* data, std::size_t len,
+                             const TlsClientHello& tls);
 
 }

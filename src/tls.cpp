@@ -90,4 +90,11 @@ TlsClientHello parse_client_hello(const std::uint8_t* p, std::size_t n) {
     return out;
 }
 
+std::string client_hello_sni(const std::uint8_t* p, std::size_t n, const TlsClientHello& tls) {
+    if (!tls.valid || tls.sni_offset + tls.sni_length > n) {
+        return std::string();
+    }
+    return std::string(reinterpret_cast<const char*>(p + tls.sni_offset), tls.sni_length);
+}
+
 }

@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <vector>
 
-#include <windivert.h>
-
 namespace zc {
+
+struct AddressTag {
+    bool outbound = false;
+};
 
 #pragma pack(push, 1)
 struct IpHdr {
@@ -55,7 +57,7 @@ constexpr std::uint8_t IPPROTO_TCP_NUM = 6;
 class Packet {
 public:
     std::vector<std::uint8_t> bytes;
-    WINDIVERT_ADDRESS          addr{};
+    AddressTag                addr{};
 
     bool parse();
 

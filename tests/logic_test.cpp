@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "csum.hpp"
+#include "services.hpp"
 #include "tls.hpp"
 
 static int g_fail = 0;
@@ -129,10 +130,23 @@ static void test_tls_reject() {
     check(!tls.valid, "non-tls data rejected");
 }
 
+static void test_service_matching() {
+    check(zc::find_service("www.youtube.com") != nullptr, "youtube.com matched");
+    check(zc::find_service("r1---sn-abc.googlevideo.com") != nullptr, "googlevideo subdomain matched");
+    check(zc::find_service("cdn.discordapp.com") != nullptr, "discord cdn matched");
+    check(zc::find_service("api.telegram.org") != nullptr, "telegram matched");
+    check(zc::find_service("example.com") == nullptr, "unknown host not matched");
+    check(zc::find_service("notyoutube.com.evil.com") == nullptr, "suffix spoof rejected");
+
+    const zc::Service* yt = zc::find_service("www.youtube.com");
+    check(yt != nullptr && std::string(yt->name) == "youtube", "youtube maps to youtube service");
+}
+
 int main() {
     test_ipv4_checksum();
     test_tls_sni();
     test_tls_reject();
+    test_service_matching();
 
     if (g_fail == 0) {
         std::printf("\nall logic tests passed\n");

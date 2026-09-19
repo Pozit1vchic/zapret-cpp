@@ -18,6 +18,7 @@ add_executable(zapret-cpp
   src/tls.cpp
   src/packet.cpp
   src/desync.cpp
+  src/services.cpp
 )
 
 target_include_directories(zapret-cpp PRIVATE "${WINDIVERT_DIR}/include")
@@ -38,5 +39,6 @@ add_executable(logic_test
   tests/logic_test.cpp
   src/csum.cpp
   src/tls.cpp
+  src/services.cpp
 )
 target_include_directories(logic_test PRIVATE src)
