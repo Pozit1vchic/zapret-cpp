@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "desync.hpp"
+#include "flow.hpp"
 #include "http.hpp"
 #include "packet.hpp"
 #include "quic.hpp"
@@ -18,6 +19,59 @@ constexpr unsigned int MTU_MAX = 65536;
 namespace {
 
 volatile LONG g_stop = 0;
+volatile LONG g_verbose = 0;
+
+std::uint64_t now_ms() {
+    return static_cast<std::uint64_t>(GetTickCount64());
+}
+
+class LogThrottle {
+public:
+    explicit LogThrottle(std::uint64_t min_interval_ms = 0)
+        : min_interval_ms_(min_interval_ms) {}
+
+    bool allow() {
+        if (min_interval_ms_ == 0) {
+            return true;
+        }
+        std::uint64_t t = now_ms();
+        if (t - last_ms_ < min_interval_ms_) {
+            return false;
+        }
+        last_ms_ = t;
+        return true;
+    }
+
+private:
+    std::uint64_t min_interval_ms_;
+    std::uint64_t last_ms_ = 0;
+};
+
+zc::FlowKey make_flow_key(const zc::Packet& pkt) {
+    zc::FlowKey k;
+    k.proto = 6;
+    if (pkt.is_ipv4() && pkt.ip() != nullptr) {
+        const zc::IpHdr* ip = pkt.ip();
+        k.src = ip->src;
+        k.dst = ip->dst;
+    } else if (pkt.is_ipv6() && pkt.ip6() != nullptr) {
+        const zc::Ipv6Hdr* ip = pkt.ip6();
+        k.src = (static_cast<std::uint32_t>(ip->src[12]) << 24) |
+                (static_cast<std::uint32_t>(ip->src[13]) << 16) |
+                (static_cast<std::uint32_t>(ip->src[14]) << 8) |
+                static_cast<std::uint32_t>(ip->src[15]);
+        k.dst = (static_cast<std::uint32_t>(ip->dst[12]) << 24) |
+                (static_cast<std::uint32_t>(ip->dst[13]) << 16) |
+                (static_cast<std::uint32_t>(ip->dst[14]) << 8) |
+                static_cast<std::uint32_t>(ip->dst[15]);
+    }
+    const zc::TcpHdr* t = pkt.tcp();
+    if (t != nullptr) {
+        k.sport = static_cast<std::uint16_t>((t->src_port << 8) | (t->src_port >> 8));
+        k.dport = static_cast<std::uint16_t>((t->dst_port << 8) | (t->dst_port >> 8));
+    }
+    return k;
+}
 
 BOOL WINAPI on_ctrl(DWORD type) {
     (void)type;
@@ -58,6 +112,8 @@ void print_usage(const char* exe) {
         "  --no-http                        disable plain HTTP (port 80) handling\n"
         "  --udplen=N                       pad (N>0) or trim (N<0) UDP payload bytes\n"
         "  --no-fake-quic                   disable fake QUIC Initial injection\n"
+        "  --verbose                        log every handled flow (default: throttled)\n"
+        "  --quiet                          log nothing except errors\n"
         "  --list                           print tracked service list and exit\n"
         "  --filter=\"...\"                  WinDivert filter override\n"
         "  --help                           this help\n"
@@ -168,6 +224,10 @@ int main(int argc, char** argv) {
             enable_http = false;
         } else if (key == "--no-fake-quic") {
             cfg.fake_quic = false;
+        } else if (key == "--verbose") {
+            InterlockedExchange(&g_verbose, 1);
+        } else if (key == "--quiet") {
+            InterlockedExchange(&g_verbose, -1);
         } else if (key == "--udplen") {
             if (!parse_int(val.c_str(), cfg.udplen_increment)) {
                 std::fprintf(stderr, "bad --udplen value\n");
@@ -236,8 +296,13 @@ int main(int argc, char** argv) {
         std::printf("[zc] udplen : %+d bytes\n", cfg.udplen_increment);
     }
     std::printf("[zc] fallback strategy: %s\n", strategy_name(cfg.strategy));
+    std::printf("[zc] log    : %s\n",
+                g_verbose == 1 ? "verbose" : (g_verbose == -1 ? "quiet" : "throttled"));
 
     std::vector<unsigned char> buffer(MTU_MAX);
+    zc::FlowCache flows(16384);
+    LogThrottle log_gate(400);
+    unsigned long long handled_count = 0;
 
     while (InterlockedCompareExchange(&g_stop, 0, 0) == 0) {
         zc::WdAddress addr;
@@ -261,6 +326,17 @@ int main(int argc, char** argv) {
                     std::string sni = zc::client_hello_sni(pkt.payload(), pkt.payload_len(), tls);
                     const zc::Service* svc = zc::find_service(sni);
                     if (!cfg.only_listed || svc != nullptr) {
+                        if (!tls.complete) {
+                            if (g_verbose == 1) {
+                                std::printf("[zc] TLS  %-40s SKIP (fragmented ClientHello, "
+                                            "%zu > %zu)\n",
+                                            sni.c_str(), tls.record_length, pkt.payload_len());
+                            }
+                            handled = true;
+                            continue;
+                        }
+                        zc::FlowKey key = make_flow_key(pkt);
+                        bool first = !flows.seen_and_mark(key, now_ms());
                         zc::Config use = cfg;
                         if (cfg.auto_strategy && svc != nullptr) {
                             zc::apply_service(*svc, use);
@@ -268,9 +344,12 @@ int main(int argc, char** argv) {
                         std::vector<zc::Packet> out = zc::apply_desync(pkt, tls, use);
                         send_all(wd, out, addr);
                         handled = true;
-                        std::printf("[zc] TLS  %-42s -> %s [%s x%d]\n", sni.c_str(),
-                                    svc ? svc->name : "default", strategy_name(use.strategy),
-                                    use.repeats);
+                        ++handled_count;
+                        if (g_verbose == 1 || (g_verbose == 0 && first && log_gate.allow())) {
+                            std::printf("[zc] TLS  %-40s -> %-16s [%s x%d]%s\n", sni.c_str(),
+                                        svc ? svc->name : "default", strategy_name(use.strategy),
+                                        use.repeats, first ? "" : " (retrans)");
+                        }
                     }
                 } else if (enable_http) {
                     zc::HttpRequest http =
@@ -286,8 +365,11 @@ int main(int argc, char** argv) {
                             std::vector<zc::Packet> out = zc::apply_http_desync(pkt, use, hs);
                             send_all(wd, out, addr);
                             handled = true;
-                            std::printf("[zc] HTTP %-42s -> %s\n", http.host.c_str(),
-                                        svc ? svc->name : "default");
+                            ++handled_count;
+                            if (g_verbose == 1 || (g_verbose == 0 && log_gate.allow())) {
+                                std::printf("[zc] HTTP %-40s -> %s\n", http.host.c_str(),
+                                            svc ? svc->name : "default");
+                            }
                         }
                     }
                 }
@@ -303,9 +385,12 @@ int main(int argc, char** argv) {
                             std::vector<zc::Packet> out = zc::apply_quic_desync(pkt, quic, cfg);
                             send_all(wd, out, addr);
                             handled = true;
-                            std::printf("[zc] QUIC udp/443 initial (dcid=%zu) -> %s\n",
-                                        quic.dcid_length,
-                                        cfg.fake_quic ? "fake+real" : "real");
+                            ++handled_count;
+                            if (g_verbose == 1 || (g_verbose == 0 && log_gate.allow())) {
+                                std::printf("[zc] QUIC udp/443 initial (dcid=%zu) -> %s\n",
+                                            quic.dcid_length,
+                                            cfg.fake_quic ? "fake+real" : "real");
+                            }
                         }
                     }
                 }
@@ -320,6 +405,6 @@ int main(int argc, char** argv) {
     }
 
     wd.close();
-    std::printf("[zc] stopped\n");
+    std::printf("\n[zc] stopped. handled %llu flow packets.\n", handled_count);
     return 0;
 }

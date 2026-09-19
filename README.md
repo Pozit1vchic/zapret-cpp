@@ -114,12 +114,34 @@ GitHub Releases.
 | `--listed` | только известные сервисы | off (обход всего) |
 | `--no-quic` | выключить UDP/QUIC | off |
 | `--no-http` | выключить HTTP:80 | off |
-| `--no-fake-quic` | не шлать fake QUIC Initial | off |
+| `--no-fake-quic` | не слать fake QUIC Initial | off |
 | `--udplen` | padding UDP payload (+N / -N байт) | `0` |
+| `--verbose` | логировать каждый обработанный поток | off |
+| `--quiet` | вообще молчать, кроме ошибок | off |
 | `--list` | список сервисов | — |
 | `--filter` | свой WinDivert-фильтр | 443/80/8443 TCP + 443 UDP |
 
 Останов — `Ctrl+C`.
+
+## Поведение (важно)
+
+Чтобы не ломать длительные соединения (Claude, стриминг, голосовые чаты), у
+заглушки есть три защитных механизма:
+
+1. **Обход один раз на соединение.** Десинхронизация применяется только к
+   *первому* ClientHello потока. Транзмиты и keep-alive пакеты идут как есть.
+   Без этого разрезали каждый пакет длинной сессии и соединение рвалось.
+2. **Пропуск фрагментированных ClientHello.** Chrome/Claude с post-quantum
+   (Kyber) шлют ClientHello на 2–3 сегмента. Если длина TLS-записи больше
+   размера сегмента, пакет отправляется **без изменений** (иначе разбиение
+   ломает рукопожатие).
+3. **Лог ограничен по времени** (не чаще раза в 400 мс в обычном режиме), чтобы
+   блокирующий `printf` не забивал очередь WinDivert и не терял пакеты при
+   активном трафике. `--verbose` для диагностики, `--quiet` — тишина.
+
+Стратегии для AI-сервисов (Anthropic/Claude, Gemini, Copilot и др.) —
+консервативные: `disorder` без повторов и без badseq, потому что Cloudflare
+жестко реагирует на мульти-повторы и битый seq.
 
 ## Структура
 
@@ -131,10 +153,11 @@ src/quic.*      парсер QUIC Initial + генератор фейковог�
 src/packet.*    разбор/пересборка IP/TCP/UDP, IPv4+IPv6
 src/desync.*    стратегии TCP/HTTP/QUIC десинхронизации
 src/services.*  список сервисов и per-service стратегии
+src/flow.*      кэш потоков (desync один раз на соединение)
 src/windivert_dyn.*  рантайм-загрузка WinDivert.dll (единый exe без import-DLL)
 src/main.cpp    WinDivert-цикл + CLI
-scripts/        make-release.ps1 — сборка релизного архива
-tests/          тесты (checksum, SNI, HTTP, QUIC, матчинг сервисов)
+scripts/        make-release.ps1 (релизный архив), sync-to-d.ps1 (синк в D:)
+tests/          тесты (checksum, SNI, HTTP, QUIC, flow, матчинг сервисов)
 ```
 
 ## QUIC (HTTP/3)

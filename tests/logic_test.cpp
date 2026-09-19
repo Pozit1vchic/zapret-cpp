@@ -5,6 +5,7 @@
 
 #include "csum.hpp"
 #include "desync.hpp"
+#include "flow.hpp"
 #include "http.hpp"
 #include "quic.hpp"
 #include "services.hpp"
@@ -206,6 +207,39 @@ static void test_quic_detection() {
           "fake quic initial is itself parseable");
 }
 
+static void test_flow_cache() {
+    zc::FlowCache cache(4);
+    zc::FlowKey a;
+    a.src = 1;
+    a.dst = 2;
+    a.sport = 50000;
+    a.dport = 443;
+    a.proto = 6;
+
+    check(!cache.seen_and_mark(a, 1000), "first packet of a flow is new");
+    check(cache.seen_and_mark(a, 1001), "second packet of same flow is known");
+
+    zc::FlowKey b = a;
+    b.sport = 50001;
+    check(!cache.seen_and_mark(b, 1002), "different source port is a new flow");
+
+    zc::FlowKey c = a;
+    c.dst = 3;
+    check(!cache.seen_and_mark(c, 1003), "different destination is a new flow");
+
+    zc::FlowCache cap(2);
+    zc::FlowKey f1;
+    f1.sport = 1;
+    zc::FlowKey f2;
+    f2.sport = 2;
+    zc::FlowKey f3;
+    f3.sport = 3;
+    cap.seen_and_mark(f1, 0);
+    cap.seen_and_mark(f2, 0);
+    cap.seen_and_mark(f3, 0);
+    check(cap.size() <= 4, "cache respects capacity bound");
+}
+
 int main() {
     test_ipv4_checksum();
     test_tls_sni();
@@ -213,6 +247,7 @@ int main() {
     test_service_matching();
     test_http_parsing();
     test_quic_detection();
+    test_flow_cache();
 
     if (g_fail == 0) {
         std::printf("\nall logic tests passed\n");

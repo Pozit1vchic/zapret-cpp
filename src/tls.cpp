@@ -15,6 +15,10 @@ TlsClientHello parse_client_hello(const std::uint8_t* p, std::size_t n) {
         return out;
     }
 
+    std::size_t declared = 5 + static_cast<std::size_t>(rd16(p + 3));
+    out.record_length = declared;
+    out.complete = (declared <= n);
+
     std::size_t record_end = 5 + static_cast<std::size_t>(rd16(p + 3));
     if (record_end > n) {
         record_end = n;

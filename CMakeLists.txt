@@ -21,6 +21,7 @@ set(SOURCES
   src/services.cpp
   src/http.cpp
   src/quic.cpp
+  src/flow.cpp
   src/windivert_dyn.cpp
 )
 
@@ -54,6 +55,7 @@ add_executable(logic_test
   src/packet.cpp
   src/desync.cpp
   src/quic.cpp
+  src/flow.cpp
 )
 target_include_directories(logic_test PRIVATE src)
 
