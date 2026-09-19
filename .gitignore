@@ -1,0 +1,4 @@
+third_party/windivert/
+build/
+*.exe
+*.obj
