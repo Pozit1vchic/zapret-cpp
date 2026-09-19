@@ -1,4 +1,55 @@
-third_party/windivert/
+# build output
 build/
+dist/
+cmake-build-*/
+out/
+bin/
+
+# binaries / objects
 *.exe
+*.dll
+*.sys
+*.lib
+*.a
+*.o
 *.obj
+*.pdb
+*.ilk
+*.exp
+*.map
+*.dmp
+*.stackdump
+
+# vendored SDK (WinDivert) - never commit
+third_party/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+
+# Ninja
+.ninja_deps
+.ninja_log
+build.ninja
+
+# logs and runtime junk
+*.log
+zapret-cpp.log
+verified_key.txt
+infinity_key.txt
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

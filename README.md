@@ -38,15 +38,18 @@
   third_party/windivert/
     include/windivert.h
     x64/WinDivert.dll
-    x64/WinDivert.lib
     x64/WinDivert64.sys
   ```
   Скачать: https://github.com/basil00/WinDivert/releases (проверено на 2.2.2-A).
+  `.lib` не нужен — API грузится в рантайме через `LoadLibrary`.
 
 > **GCC 16 / MinGW:** в `main.cpp` C++-заголовки (`<string>`, `<vector>`) идут
 > **до** `<windows.h>`. Иначе `windows.h` ломает libstdc++ сотнями ошибок.
 
 ## Сборка
+
+Единый самодостаточный exe (статическая линковка, без libstdc++/libgcc в
+зависимостях; WinDivert грузится через `LoadLibrary`):
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -59,10 +62,28 @@ cmake --build build
 ./build/logic_test.exe
 ```
 
+## Релиз
+
+Одной командой собирается готовый архив для публикации:
+
+```powershell
+pwsh -File scripts/make-release.ps1 -Version v1.0.0
+```
+
+Результат в `dist/`: `zapret-cpp.exe` + `WinDivert.dll` + `WinDivert64.sys` +
+`README.md`, упакованные в `zapret-cpp-v1.0.0.zip`. Этот архив и выкладывай в
+GitHub Releases.
+
 ## Запуск
 
-Нужны **права администратора**. `WinDivert.dll` и `WinDivert64.sys` кладутся
-рядом с exe (`third_party/windivert/x64/`).
+**Только от имени администратора** (WinDivert грузит драйвер). Рядом с exe
+обязательны `WinDivert.dll` и `WinDivert64.sys` — из релизного архива они уже
+рядом.
+
+> Запускай **двойным кликом** `zapret-cpp.exe` → откроется окно консоли со
+> статусом и логом обхода. Окно закроется только по `Ctrl+C` или закрытию.
+> Если exe не стартует и окно мигает — почти всегда это (1) отсутствие прав
+> администратора или (2) `WinDivert.dll`/`WinDivert64.sys` не лежат рядом с exe.
 
 ```sh
 # работает из коробки: TLS+HTTP+QUIC, все хосты, авто-стратегии
@@ -110,7 +131,9 @@ src/quic.*      парсер QUIC Initial + генератор фейковог�
 src/packet.*    разбор/пересборка IP/TCP/UDP, IPv4+IPv6
 src/desync.*    стратегии TCP/HTTP/QUIC десинхронизации
 src/services.*  список сервисов и per-service стратегии
+src/windivert_dyn.*  рантайм-загрузка WinDivert.dll (единый exe без import-DLL)
 src/main.cpp    WinDivert-цикл + CLI
+scripts/        make-release.ps1 — сборка релизного архива
 tests/          тесты (checksum, SNI, HTTP, QUIC, матчинг сервисов)
 ```
 

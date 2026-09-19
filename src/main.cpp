@@ -4,7 +4,6 @@
 #include <vector>
 
 #include <windows.h>
-#include <windivert.h>
 
 #include "desync.hpp"
 #include "http.hpp"
@@ -12,6 +11,9 @@
 #include "quic.hpp"
 #include "services.hpp"
 #include "tls.hpp"
+#include "windivert_dyn.hpp"
+
+constexpr unsigned int MTU_MAX = 65536;
 
 namespace {
 
@@ -21,6 +23,21 @@ BOOL WINAPI on_ctrl(DWORD type) {
     (void)type;
     InterlockedExchange(&g_stop, 1);
     return TRUE;
+}
+
+void pause_before_exit() {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h == nullptr || h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD mode = 0;
+    if (!GetConsoleMode(h, &mode)) {
+        return;
+    }
+    std::fprintf(stderr, "[zc] press Enter to exit...");
+    std::fflush(stderr);
+    char line[8];
+    std::fgets(line, sizeof(line), stdin);
 }
 
 void print_usage(const char* exe) {
@@ -109,11 +126,10 @@ void print_services() {
     }
 }
 
-void send_all(HANDLE wd, const std::vector<zc::Packet>& out, const WINDIVERT_ADDRESS& addr) {
+void send_all(zc::Windivert& wd, const std::vector<zc::Packet>& out, const zc::WdAddress& addr) {
     for (const zc::Packet& o : out) {
-        WINDIVERT_ADDRESS a = addr;
-        if (!WinDivertSend(wd, o.bytes.data(), static_cast<UINT>(o.bytes.size()), nullptr, &a)) {
-            std::fprintf(stderr, "WinDivertSend failed: %lu\n", GetLastError());
+        if (!wd.send(o.bytes.data(), static_cast<unsigned int>(o.bytes.size()), addr)) {
+            std::fprintf(stderr, "WinDivertSend failed (%lu)\n", wd.last_error());
         }
     }
 }
@@ -199,12 +215,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    HANDLE wd = WinDivertOpen(filter.c_str(), WINDIVERT_LAYER_NETWORK, 0, 0);
-    if (wd == INVALID_HANDLE_VALUE) {
-        std::fprintf(stderr,
-                     "WinDivertOpen failed (error %lu). Run as Administrator and place "
-                     "WinDivert.dll / WinDivert64.sys next to the exe.\n",
-                     GetLastError());
+    zc::Windivert wd;
+    if (!wd.open(filter)) {
+        std::fprintf(stderr, "\n[zc] ERROR: %s\n", zc::Windivert::last_open_error().c_str());
+        std::fprintf(stderr, "[zc] Make sure WinDivert.dll and WinDivert64.sys are next to the exe,\n");
+        std::fprintf(stderr, "[zc] and that you are running as Administrator.\n\n");
+        pause_before_exit();
         return 1;
     }
 
@@ -221,24 +237,24 @@ int main(int argc, char** argv) {
     }
     std::printf("[zc] fallback strategy: %s\n", strategy_name(cfg.strategy));
 
-    std::vector<unsigned char> buffer(WINDIVERT_MTU_MAX);
+    std::vector<unsigned char> buffer(MTU_MAX);
 
     while (InterlockedCompareExchange(&g_stop, 0, 0) == 0) {
-        WINDIVERT_ADDRESS addr;
-        UINT              len = 0;
+        zc::WdAddress addr;
+        unsigned int  len = 0;
 
-        if (!WinDivertRecv(wd, buffer.data(), static_cast<UINT>(buffer.size()), &len, &addr)) {
-            std::fprintf(stderr, "WinDivertRecv failed: %lu\n", GetLastError());
+        if (!wd.receive(buffer.data(), static_cast<unsigned int>(buffer.size()), len, addr)) {
+            std::fprintf(stderr, "WinDivertRecv failed (%lu)\n", wd.last_error());
             continue;
         }
 
         zc::Packet pkt;
         pkt.bytes.assign(buffer.begin(), buffer.begin() + len);
-        pkt.addr.outbound = addr.Outbound != 0;
+        pkt.addr.outbound = addr.outbound;
 
         bool handled = false;
 
-        if (addr.Outbound && pkt.parse()) {
+        if (addr.outbound && pkt.parse()) {
             if (pkt.is_tcp()) {
                 zc::TlsClientHello tls = zc::parse_client_hello(pkt.payload(), pkt.payload_len());
                 if (tls.valid) {
@@ -297,13 +313,13 @@ int main(int argc, char** argv) {
         }
 
         if (!handled) {
-            if (!WinDivertSend(wd, buffer.data(), len, nullptr, &addr)) {
-                std::fprintf(stderr, "WinDivertSend failed: %lu\n", GetLastError());
+            if (!wd.send(buffer.data(), len, addr)) {
+                std::fprintf(stderr, "WinDivertSend failed (%lu)\n", wd.last_error());
             }
         }
     }
 
-    WinDivertClose(wd);
+    wd.close();
     std::printf("[zc] stopped\n");
     return 0;
 }

@@ -10,9 +10,9 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(WINDIVERT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/windivert"
-    CACHE PATH "WinDivert SDK root (contains include/ and x64/)")
+    CACHE PATH "WinDivert SDK root (contains include/)")
 
-add_executable(zapret-cpp
+set(SOURCES
   src/main.cpp
   src/csum.cpp
   src/tls.cpp
@@ -21,21 +21,29 @@ add_executable(zapret-cpp
   src/services.cpp
   src/http.cpp
   src/quic.cpp
+  src/windivert_dyn.cpp
 )
 
-target_include_directories(zapret-cpp PRIVATE "${WINDIVERT_DIR}/include")
+add_executable(zapret-cpp ${SOURCES})
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-  set(WINDIVERT_ARCH x64)
-else()
-  set(WINDIVERT_ARCH x86)
+target_include_directories(zapret-cpp PRIVATE
+  src
+  "${WINDIVERT_DIR}/include"
+)
+
+target_link_libraries(zapret-cpp PRIVATE ws2_32 iphlpapi)
+
+if(MINGW)
+  target_link_options(zapret-cpp PRIVATE
+    -static
+    -static-libgcc
+    -static-libstdc++
+  )
 endif()
 
-target_link_libraries(zapret-cpp PRIVATE
-  "${WINDIVERT_DIR}/${WINDIVERT_ARCH}/WinDivert.dll"
-  ws2_32
-  iphlpapi
-)
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_link_options(zapret-cpp PRIVATE -s)
+endif()
 
 add_executable(logic_test
   tests/logic_test.cpp
@@ -48,3 +56,7 @@ add_executable(logic_test
   src/quic.cpp
 )
 target_include_directories(logic_test PRIVATE src)
+
+if(MINGW)
+  target_link_options(logic_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
