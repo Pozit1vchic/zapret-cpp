@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "packet.hpp"
+#include "quic.hpp"
 #include "tls.hpp"
 
 namespace zc {
@@ -34,6 +35,9 @@ struct Config {
     bool fake_mod_rnd = false;
     bool fake_mod_sni = true;
     int  disorder_segments = 4;
+
+    bool fake_quic = true;
+    int  udplen_increment = 0;
 };
 
 std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, const Config& cfg);
@@ -41,7 +45,7 @@ std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, c
 std::vector<Packet> apply_http_desync(const Packet& pkt, const Config& cfg,
                                       std::size_t header_split);
 
-std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg);
+std::vector<Packet> apply_quic_desync(const Packet& pkt, const QuicInitial& quic, const Config& cfg);
 
 bool is_quic_initial(const std::uint8_t* payload, std::size_t len);
 

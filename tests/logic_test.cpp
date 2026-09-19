@@ -6,6 +6,7 @@
 #include "csum.hpp"
 #include "desync.hpp"
 #include "http.hpp"
+#include "quic.hpp"
 #include "services.hpp"
 #include "tls.hpp"
 
@@ -162,19 +163,47 @@ static void test_http_parsing() {
 }
 
 static void test_quic_detection() {
-    std::uint8_t quic_initial[40] = {0};
-    quic_initial[0] = 0xc0;
-    quic_initial[1] = 0x00;
-    quic_initial[2] = 0x00;
-    quic_initial[3] = 0x00;
-    quic_initial[4] = 0x01;
-    check(zc::is_quic_initial(quic_initial, sizeof(quic_initial)), "quic long header detected");
+    std::vector<std::uint8_t> init;
+    init.push_back(0xc0);
+    init.push_back(0x00);
+    init.push_back(0x00);
+    init.push_back(0x00);
+    init.push_back(0x01);
+    init.push_back(0x08);
+    for (int i = 0; i < 8; ++i) {
+        init.push_back(static_cast<std::uint8_t>(0x10 + i));
+    }
+    init.push_back(0x00);
+    init.push_back(0x00);
+    init.push_back(0x00);
+    init.push_back(0x44);
+    for (int i = 0; i < 32; ++i) {
+        init.push_back(0xaa);
+    }
 
-    std::uint8_t quic_v2[8] = {0xc0, 0x6b, 0x33, 0x43, 0xcf, 0x00, 0x00, 0x00};
-    check(zc::is_quic_initial(quic_v2, sizeof(quic_v2)), "quic v2 (draft) detected");
+    zc::QuicInitial q = zc::parse_quic_initial(init.data(), init.size());
+    check(q.valid, "quic initial parsed");
+    check(q.dcid_length == 8, "quic dcid length parsed");
+    check(q.dcid_offset == 6, "quic dcid offset correct");
+    check(q.length == 0x44, "quic length field parsed");
+    check(zc::is_quic_initial(init.data(), init.size()), "is_quic_initial agrees");
 
     std::uint8_t random[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
     check(!zc::is_quic_initial(random, sizeof(random)), "non-quic udp rejected");
+
+    std::uint8_t short_header[10] = {0x40, 0x11, 0x22, 0x33, 0x44, 0x55,
+                                     0x66, 0x77, 0x88, 0x99};
+    check(!zc::is_quic_initial(short_header, sizeof(short_header)),
+          "quic 1-RTT short header rejected");
+
+    std::vector<std::uint8_t> fake = zc::build_fake_quic_initial(1200, &q);
+    check(fake.size() == 1200, "fake quic initial built to target size");
+    check((fake[0] & 0x80) != 0 && ((fake[0] >> 4) & 0x03) == 0x00,
+          "fake quic initial is a long-header Initial");
+    check(fake[1] == 0x00 && fake[4] == 0x01, "fake quic version is v1");
+    check(fake[5] == q.dcid_length, "fake quic reuses real dcid length");
+    check(zc::parse_quic_initial(fake.data(), fake.size()).valid,
+          "fake quic initial is itself parseable");
 }
 
 int main() {

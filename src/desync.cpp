@@ -286,25 +286,11 @@ std::vector<Packet> apply_http_desync(const Packet& pkt, const Config& cfg,
 }
 
 bool is_quic_initial(const std::uint8_t* p, std::size_t n) {
-    if (n < 6) {
-        return false;
-    }
-    bool long_header = (p[0] & 0x80) != 0;
-    if (!long_header) {
-        return false;
-    }
-    std::uint32_t version = (static_cast<std::uint32_t>(p[1]) << 24) |
-                            (static_cast<std::uint32_t>(p[2]) << 16) |
-                            (static_cast<std::uint32_t>(p[3]) << 8) |
-                            static_cast<std::uint32_t>(p[4]);
-    if (version == 0) {
-        return false;
-    }
-    std::uint8_t type = (p[0] >> 4) & 0x03;
-    return type == 0x0;
+    QuicInitial q = parse_quic_initial(p, n);
+    return q.valid;
 }
 
-std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg) {
+std::vector<Packet> apply_quic_desync(const Packet& pkt, const QuicInitial& quic, const Config& cfg) {
     std::vector<Packet> out;
 
     if (!pkt.is_udp() || pkt.udp() == nullptr) {
@@ -312,32 +298,48 @@ std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg) {
         return out;
     }
 
-    const std::uint8_t* pl = pkt.payload();
     std::size_t plen = pkt.payload_len();
     if (plen == 0) {
         out.push_back(pkt);
         return out;
     }
 
-    std::vector<std::uint8_t> fake(pl, pl + plen);
-    for (std::size_t i = 0; i < fake.size(); ++i) {
-        fake[i] = static_cast<std::uint8_t>(rand32() & 0xff);
-    }
+    if (cfg.fake_quic) {
+        std::vector<std::uint8_t> fake = build_fake_quic_initial(plen, &quic);
 
-    Packet fakepkt = pkt;
-    fakepkt.bytes.resize(pkt.l4_off() + pkt.l4_hdr_len());
-    fakepkt.bytes.insert(fakepkt.bytes.end(), fake.begin(), fake.end());
-    if (fakepkt.parse()) {
-        if (fakepkt.is_ipv4() && fakepkt.ip()) {
-            fakepkt.ip()->ttl = static_cast<std::uint8_t>(cfg.fake_ttl);
-        } else if (fakepkt.is_ipv6() && fakepkt.ip6()) {
-            fakepkt.ip6()->hop_limit = static_cast<std::uint8_t>(cfg.fake_ttl);
+        Packet fakepkt = pkt;
+        fakepkt.bytes.resize(pkt.l4_off() + pkt.l4_hdr_len());
+        fakepkt.bytes.insert(fakepkt.bytes.end(), fake.begin(), fake.end());
+        if (fakepkt.parse()) {
+            if (fakepkt.is_ipv4() && fakepkt.ip()) {
+                fakepkt.ip()->ttl = static_cast<std::uint8_t>(cfg.fake_ttl);
+            } else if (fakepkt.is_ipv6() && fakepkt.ip6()) {
+                fakepkt.ip6()->hop_limit = static_cast<std::uint8_t>(cfg.fake_ttl);
+            }
+            fakepkt.refresh_lengths_and_checksums();
+            out.push_back(fakepkt);
         }
-        fakepkt.refresh_lengths_and_checksums();
-        out.push_back(fakepkt);
     }
 
-    out.push_back(pkt);
+    Packet real = pkt;
+
+    if (cfg.udplen_increment != 0 && real.is_udp() && real.udp() != nullptr) {
+        int inc = cfg.udplen_increment;
+        if (inc > 0) {
+            real.bytes.insert(real.bytes.end(), static_cast<std::size_t>(inc), 0x00);
+            real.parse();
+            real.refresh_lengths_and_checksums();
+        } else if (inc < 0) {
+            std::size_t drop = static_cast<std::size_t>(-inc);
+            if (drop < real.payload_len()) {
+                real.bytes.resize(real.bytes.size() - drop);
+                real.parse();
+                real.refresh_lengths_and_checksums();
+            }
+        }
+    }
+
+    out.push_back(real);
     return out;
 }
 

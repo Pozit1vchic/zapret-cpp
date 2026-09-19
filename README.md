@@ -93,6 +93,8 @@ cmake --build build
 | `--listed` | только известные сервисы | off (обход всего) |
 | `--no-quic` | выключить UDP/QUIC | off |
 | `--no-http` | выключить HTTP:80 | off |
+| `--no-fake-quic` | не шлать fake QUIC Initial | off |
+| `--udplen` | padding UDP payload (+N / -N байт) | `0` |
 | `--list` | список сервисов | — |
 | `--filter` | свой WinDivert-фильтр | 443/80/8443 TCP + 443 UDP |
 
@@ -104,6 +106,7 @@ cmake --build build
 src/csum.*      контрольные суммы (RFC 1071)
 src/tls.*       парсер TLS ClientHello → SNI
 src/http.*      парсер HTTP-запроса → Host
+src/quic.*      парсер QUIC Initial + генератор фейкового Initial
 src/packet.*    разбор/пересборка IP/TCP/UDP, IPv4+IPv6
 src/desync.*    стратегии TCP/HTTP/QUIC десинхронизации
 src/services.*  список сервисов и per-service стратегии
@@ -111,9 +114,24 @@ src/main.cpp    WinDivert-цикл + CLI
 tests/          тесты (checksum, SNI, HTTP, QUIC, матчинг сервисов)
 ```
 
+## QUIC (HTTP/3)
+
+Как и nfqws, обход **не расшифровывает** QUIC (payload защищён header
+protection'ом). Применяются те же приёмы, что в zapret:
+
+- **fake QUIC Initial** — перед реальным пакетом отправляется структурно
+  корректный фейковый Initial (long header, version = v1, случайный DCID/SCID,
+  правдоподобная длина, низкий TTL). DPI разбирает фейк и ошибается.
+- **udplen** (`--udplen=N`) — добавить `N>0` нулевых байт к payload или срезать
+  `N<0`, чтобы сломать DPI, ориентирующийся на размеры пакетов.
+
+Парсер строгий: требует long header, тип Initial, ненулевую версию и корректные
+длины DCID/SCID/token. Short header (1-RTT) и мусор не трогаются.
+
 ## Ограничения
 
-- QUIC-обход отправляет fake+real, но не режет сам QUIC Initial (это сложнее:
-  нужен разбор QUIC-фреймов и CRC/header protection).
+- QUIC Initial **не расшифровывается** — hostname из CRYPTO-фрейма недоступен,
+  поэтому hostlist для QUIC не применяется (в zapret для этого есть режим с
+  ключами). Работает на уровне «фейк + реальный пакет».
 - Нет обхода по IP (`ipset`) — только по SNI/Host.
 - IPv6 поддержан в парсере, на живом трафике не тестировался.

@@ -9,6 +9,7 @@
 #include "desync.hpp"
 #include "http.hpp"
 #include "packet.hpp"
+#include "quic.hpp"
 #include "services.hpp"
 #include "tls.hpp"
 
@@ -38,6 +39,8 @@ void print_usage(const char* exe) {
         "  --listed                         only bypass known services (default: ALL traffic)\n"
         "  --no-quic                        disable UDP/QUIC (HTTP/3) handling\n"
         "  --no-http                        disable plain HTTP (port 80) handling\n"
+        "  --udplen=N                       pad (N>0) or trim (N<0) UDP payload bytes\n"
+        "  --no-fake-quic                   disable fake QUIC Initial injection\n"
         "  --list                           print tracked service list and exit\n"
         "  --filter=\"...\"                  WinDivert filter override\n"
         "  --help                           this help\n"
@@ -147,6 +150,13 @@ int main(int argc, char** argv) {
             enable_quic = false;
         } else if (key == "--no-http") {
             enable_http = false;
+        } else if (key == "--no-fake-quic") {
+            cfg.fake_quic = false;
+        } else if (key == "--udplen") {
+            if (!parse_int(val.c_str(), cfg.udplen_increment)) {
+                std::fprintf(stderr, "bad --udplen value\n");
+                return 2;
+            }
         } else if (key == "--strategy") {
             if (!parse_strategy(val, cfg.strategy)) {
                 std::fprintf(stderr, "unknown strategy: %s\n", val.c_str());
@@ -206,6 +216,9 @@ int main(int argc, char** argv) {
                 cfg.only_listed ? "tracked services only" : "ALL traffic");
     std::printf("[zc] modes  : TLS%s%s\n", enable_http ? " + HTTP" : "",
                 enable_quic ? " + QUIC" : "");
+    if (cfg.udplen_increment != 0) {
+        std::printf("[zc] udplen : %+d bytes\n", cfg.udplen_increment);
+    }
     std::printf("[zc] fallback strategy: %s\n", strategy_name(cfg.strategy));
 
     std::vector<unsigned char> buffer(WINDIVERT_MTU_MAX);
@@ -267,11 +280,17 @@ int main(int argc, char** argv) {
                 if (u != nullptr) {
                     unsigned dst_port = static_cast<unsigned>((u->dst_port << 8) |
                                                               (u->dst_port >> 8)) & 0xffff;
-                    if (dst_port == 443 && zc::is_quic_initial(pkt.payload(), pkt.payload_len())) {
-                        std::vector<zc::Packet> out = zc::apply_quic_desync(pkt, cfg);
-                        send_all(wd, out, addr);
-                        handled = true;
-                        std::printf("[zc] QUIC udp/443 (initial) -> fake+real\n");
+                    if (dst_port == 443) {
+                        zc::QuicInitial quic =
+                            zc::parse_quic_initial(pkt.payload(), pkt.payload_len());
+                        if (quic.valid) {
+                            std::vector<zc::Packet> out = zc::apply_quic_desync(pkt, quic, cfg);
+                            send_all(wd, out, addr);
+                            handled = true;
+                            std::printf("[zc] QUIC udp/443 initial (dcid=%zu) -> %s\n",
+                                        quic.dcid_length,
+                                        cfg.fake_quic ? "fake+real" : "real");
+                        }
                     }
                 }
             }
