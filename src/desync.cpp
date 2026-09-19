@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 
 namespace zc {
 
@@ -99,18 +98,18 @@ std::vector<std::uint8_t> build_fake_payload(const std::uint8_t* pl, std::size_t
 }
 
 std::vector<Packet> do_split(const Packet& pkt, const std::uint8_t* pl, std::size_t plen,
-                             std::uint32_t seq, std::uint8_t flags, int split, const Config& cfg) {
+                             std::uint32_t seq, std::uint8_t flags, int split, const Config&) {
     std::vector<Packet> out;
-    out.push_back(make_segment(pkt, pl, split, seq, flags, -1, cfg.fooling_badseq));
+    out.push_back(make_segment(pkt, pl, split, seq, flags, -1, false));
     out.push_back(make_segment(pkt, pl + split, plen - split, seq + split, flags, -1, false));
     return out;
 }
 
 std::vector<Packet> do_disorder(const Packet& pkt, const std::uint8_t* pl, std::size_t plen,
-                                std::uint32_t seq, std::uint8_t flags, int split, const Config& cfg) {
+                                std::uint32_t seq, std::uint8_t flags, int split, const Config&) {
     std::vector<Packet> out;
     out.push_back(make_segment(pkt, pl + split, plen - split, seq + split, flags, -1, false));
-    out.push_back(make_segment(pkt, pl, split, seq, flags, -1, cfg.fooling_badseq));
+    out.push_back(make_segment(pkt, pl, split, seq, flags, -1, false));
     return out;
 }
 
@@ -128,6 +127,10 @@ std::vector<Packet> do_multidisorder(const Packet& pkt, const std::uint8_t* pl, 
     }
     if (static_cast<std::size_t>(segs) > plen) {
         segs = static_cast<int>(plen);
+    }
+    if (segs < 2) {
+        out.push_back(pkt);
+        return out;
     }
 
     std::vector<std::pair<std::size_t, std::size_t>> parts;
@@ -159,10 +162,8 @@ std::vector<Packet> do_multidisorder(const Packet& pkt, const std::uint8_t* pl, 
 
     for (std::size_t i = parts.size(); i-- > 0;) {
         const auto& part = parts[i];
-        bool reverse_tail = (i + 1 < parts.size());
         std::uint32_t s = seq + static_cast<std::uint32_t>(part.first);
-        out.push_back(make_segment(pkt, pl + part.first, part.second, s, flags, -1,
-                                   reverse_tail && cfg.fooling_badseq));
+        out.push_back(make_segment(pkt, pl + part.first, part.second, s, flags, -1, false));
     }
 
     return out;
@@ -218,7 +219,8 @@ std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, c
 
     case Strategy::FakeTtl: {
         std::vector<std::uint8_t> fake = build_fake_payload(pl, plen, tls, cfg);
-        out.push_back(make_segment(pkt, fake.data(), fake.size(), seq, flags, cfg.fake_ttl, false));
+        out.push_back(make_segment(pkt, fake.data(), fake.size(), seq, flags, cfg.fake_ttl,
+                                   cfg.fooling_badseq));
         out.push_back(make_segment(pkt, pl, plen, seq, flags, -1, false));
         break;
     }
@@ -226,7 +228,8 @@ std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, c
     case Strategy::FakeMultidisorder:
     case Strategy::FakeAuto: {
         std::vector<std::uint8_t> fake = build_fake_payload(pl, plen, tls, cfg);
-        out.push_back(make_segment(pkt, fake.data(), fake.size(), seq, flags, cfg.fake_ttl, false));
+        out.push_back(make_segment(pkt, fake.data(), fake.size(), seq, flags, cfg.fake_ttl,
+                                   cfg.fooling_badseq));
 
         std::vector<Packet> core = do_multidisorder(pkt, pl, plen, seq, flags, split, cfg);
         out.insert(out.end(), core.begin(), core.end());
@@ -234,11 +237,8 @@ std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, c
     }
 
     case Strategy::HttpSplit:
-        out = do_split(pkt, pl, plen, seq, flags, split, cfg);
-        break;
-
     case Strategy::HttpDisorder:
-        out = do_disorder(pkt, pl, plen, seq, flags, split, cfg);
+        out = do_split(pkt, pl, plen, seq, flags, split, cfg);
         break;
 
     case Strategy::FakeQuic:
@@ -286,7 +286,7 @@ std::vector<Packet> apply_http_desync(const Packet& pkt, const Config& cfg,
 }
 
 bool is_quic_initial(const std::uint8_t* p, std::size_t n) {
-    if (n < 5) {
+    if (n < 6) {
         return false;
     }
     bool long_header = (p[0] & 0x80) != 0;
@@ -297,10 +297,14 @@ bool is_quic_initial(const std::uint8_t* p, std::size_t n) {
                             (static_cast<std::uint32_t>(p[2]) << 16) |
                             (static_cast<std::uint32_t>(p[3]) << 8) |
                             static_cast<std::uint32_t>(p[4]);
-    return version != 0;
+    if (version == 0) {
+        return false;
+    }
+    std::uint8_t type = (p[0] >> 4) & 0x03;
+    return type == 0x0;
 }
 
-std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg, std::size_t sni_guess) {
+std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg) {
     std::vector<Packet> out;
 
     if (!pkt.is_udp() || pkt.udp() == nullptr) {
@@ -332,8 +336,6 @@ std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg, std:
         fakepkt.refresh_lengths_and_checksums();
         out.push_back(fakepkt);
     }
-
-    (void)sni_guess;
 
     out.push_back(pkt);
     return out;

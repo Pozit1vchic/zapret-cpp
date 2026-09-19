@@ -26,6 +26,11 @@ bool Packet::parse() {
         if (ip_hdr_len_ < 20 || bytes.size() < ip_hdr_len_) {
             return false;
         }
+        std::uint16_t frag = (static_cast<std::uint16_t>(h->frag_off >> 8) |
+                              static_cast<std::uint16_t>(h->frag_off << 8));
+        if ((frag & 0x1fff) != 0) {
+            return false;
+        }
         proto = h->proto;
         l4_off_ = ip_hdr_len_;
     } else if (version == 6) {

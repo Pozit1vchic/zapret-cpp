@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
                     unsigned dst_port = static_cast<unsigned>((u->dst_port << 8) |
                                                               (u->dst_port >> 8)) & 0xffff;
                     if (dst_port == 443 && zc::is_quic_initial(pkt.payload(), pkt.payload_len())) {
-                        std::vector<zc::Packet> out = zc::apply_quic_desync(pkt, cfg, 0);
+                        std::vector<zc::Packet> out = zc::apply_quic_desync(pkt, cfg);
                         send_all(wd, out, addr);
                         handled = true;
                         std::printf("[zc] QUIC udp/443 (initial) -> fake+real\n");
