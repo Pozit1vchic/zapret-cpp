@@ -4,6 +4,8 @@
 #include <vector>
 
 #include "csum.hpp"
+#include "desync.hpp"
+#include "http.hpp"
 #include "services.hpp"
 #include "tls.hpp"
 
@@ -142,11 +144,46 @@ static void test_service_matching() {
     check(yt != nullptr && std::string(yt->name) == "youtube", "youtube maps to youtube service");
 }
 
+static void test_http_parsing() {
+    std::string req = "GET /index.html HTTP/1.1\r\nHost: www.youtube.com\r\nUser-Agent: x\r\n\r\n";
+    std::vector<std::uint8_t> buf(req.begin(), req.end());
+    zc::HttpRequest h = zc::parse_http_request(buf.data(), buf.size());
+    check(h.valid, "http request parsed");
+    check(h.host == "www.youtube.com", "http host extracted");
+
+    std::string req2 = "POST /api HTTP/1.0\r\nhost:api.openai.com:443\r\n\r\n";
+    std::vector<std::uint8_t> b2(req2.begin(), req2.end());
+    zc::HttpRequest h2 = zc::parse_http_request(b2.data(), b2.size());
+    check(h2.valid && h2.host == "api.openai.com", "lowercase host with port stripped");
+
+    std::vector<std::uint8_t> junk(32, 0x41);
+    zc::HttpRequest h3 = zc::parse_http_request(junk.data(), junk.size());
+    check(!h3.valid, "non-http data rejected");
+}
+
+static void test_quic_detection() {
+    std::uint8_t quic_initial[40] = {0};
+    quic_initial[0] = 0xc0;
+    quic_initial[1] = 0x00;
+    quic_initial[2] = 0x00;
+    quic_initial[3] = 0x00;
+    quic_initial[4] = 0x01;
+    check(zc::is_quic_initial(quic_initial, sizeof(quic_initial)), "quic long header detected");
+
+    std::uint8_t quic_v2[8] = {0xc0, 0x6b, 0x33, 0x43, 0xcf, 0x00, 0x00, 0x00};
+    check(zc::is_quic_initial(quic_v2, sizeof(quic_v2)), "quic v2 (draft) detected");
+
+    std::uint8_t random[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    check(!zc::is_quic_initial(random, sizeof(random)), "non-quic udp rejected");
+}
+
 int main() {
     test_ipv4_checksum();
     test_tls_sni();
     test_tls_reject();
     test_service_matching();
+    test_http_parsing();
+    test_quic_detection();
 
     if (g_fail == 0) {
         std::printf("\nall logic tests passed\n");

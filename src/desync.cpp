@@ -232,9 +232,111 @@ std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, c
         out.insert(out.end(), core.begin(), core.end());
         break;
     }
+
+    case Strategy::HttpSplit:
+        out = do_split(pkt, pl, plen, seq, flags, split, cfg);
+        break;
+
+    case Strategy::HttpDisorder:
+        out = do_disorder(pkt, pl, plen, seq, flags, split, cfg);
+        break;
+
+    case Strategy::FakeQuic:
+        out.push_back(pkt);
+        break;
     }
 
     return emit_with_repeats(out, cfg.repeats);
+}
+
+std::vector<Packet> apply_http_desync(const Packet& pkt, const Config& cfg,
+                                      std::size_t header_split) {
+    std::vector<Packet> out;
+
+    if (!pkt.is_tcp() || pkt.tcp() == nullptr) {
+        out.push_back(pkt);
+        return out;
+    }
+
+    const std::uint8_t* pl = pkt.payload();
+    std::size_t plen = pkt.payload_len();
+    if (plen == 0) {
+        out.push_back(pkt);
+        return out;
+    }
+
+    int split = (cfg.split_pos >= 0) ? cfg.split_pos : static_cast<int>(header_split);
+    if (split < 1) {
+        split = 1;
+    }
+    if (split >= static_cast<int>(plen)) {
+        split = static_cast<int>(plen) - 1;
+    }
+
+    std::uint32_t seq = bswap32(pkt.tcp()->seq);
+    std::uint8_t  flags = pkt.tcp()->flags;
+
+    if (cfg.strategy == Strategy::HttpDisorder) {
+        out = do_disorder(pkt, pl, plen, seq, flags, split, cfg);
+    } else {
+        out = do_split(pkt, pl, plen, seq, flags, split, cfg);
+    }
+
+    return emit_with_repeats(out, cfg.repeats);
+}
+
+bool is_quic_initial(const std::uint8_t* p, std::size_t n) {
+    if (n < 5) {
+        return false;
+    }
+    bool long_header = (p[0] & 0x80) != 0;
+    if (!long_header) {
+        return false;
+    }
+    std::uint32_t version = (static_cast<std::uint32_t>(p[1]) << 24) |
+                            (static_cast<std::uint32_t>(p[2]) << 16) |
+                            (static_cast<std::uint32_t>(p[3]) << 8) |
+                            static_cast<std::uint32_t>(p[4]);
+    return version != 0;
+}
+
+std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg, std::size_t sni_guess) {
+    std::vector<Packet> out;
+
+    if (!pkt.is_udp() || pkt.udp() == nullptr) {
+        out.push_back(pkt);
+        return out;
+    }
+
+    const std::uint8_t* pl = pkt.payload();
+    std::size_t plen = pkt.payload_len();
+    if (plen == 0) {
+        out.push_back(pkt);
+        return out;
+    }
+
+    std::vector<std::uint8_t> fake(pl, pl + plen);
+    for (std::size_t i = 0; i < fake.size(); ++i) {
+        fake[i] = static_cast<std::uint8_t>(rand32() & 0xff);
+    }
+
+    Packet fakepkt = pkt;
+    fakepkt.bytes.resize(pkt.l4_off() + pkt.l4_hdr_len());
+    fakepkt.bytes.insert(fakepkt.bytes.end(), fake.begin(), fake.end());
+    if (fakepkt.parse()) {
+        if (fakepkt.is_ipv4() && fakepkt.ip()) {
+            fakepkt.ip()->ttl = static_cast<std::uint8_t>(cfg.fake_ttl);
+        } else if (fakepkt.is_ipv6() && fakepkt.ip6()) {
+            fakepkt.ip6()->hop_limit = static_cast<std::uint8_t>(cfg.fake_ttl);
+        }
+        fakepkt.refresh_lengths_and_checksums();
+        out.push_back(fakepkt);
+    }
+
+    (void)sni_guess;
+
+    out.push_back(pkt);
+    return out;
 }
 
 }

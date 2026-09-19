@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,9 @@ enum class Strategy {
     FakeTtl,
     FakeMultidisorder,
     FakeAuto,
+    FakeQuic,
+    HttpSplit,
+    HttpDisorder,
 };
 
 struct Config {
@@ -34,5 +38,13 @@ struct Config {
 };
 
 std::vector<Packet> apply_desync(const Packet& pkt, const TlsClientHello& tls, const Config& cfg);
+
+std::vector<Packet> apply_http_desync(const Packet& pkt, const Config& cfg,
+                                      std::size_t header_split);
+
+std::vector<Packet> apply_quic_desync(const Packet& pkt, const Config& cfg,
+                                      std::size_t sni_guess);
+
+bool is_quic_initial(const std::uint8_t* payload, std::size_t len);
 
 }
