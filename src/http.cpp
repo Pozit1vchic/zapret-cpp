@@ -46,15 +46,17 @@ HttpRequest parse_http_request(const std::uint8_t* p, std::size_t n) {
         return out;
     }
 
-    for (std::size_t i = out.method_end; i + 4 <= n; ++i) {
-        if (i + 2 <= n && p[i] == '\r' && p[i + 1] == '\n') {
-            if (p[i + 2] == '\r' && p[i + 3] == '\n') {
+    std::size_t i = out.method_end;
+    while (i < n) {
+        // End of the request line / header section ("\r\n\r\n").
+        if (i + 1 < n && p[i] == '\r' && p[i + 1] == '\n') {
+            if (i + 3 < n && p[i + 2] == '\r' && p[i + 3] == '\n') {
                 break;
             }
-            ++i;
+            i += 2;
             continue;
         }
-        if (starts_with_ci(p + i, n - i, "host:", 5)) {
+        if (i + 5 <= n && starts_with_ci(p + i, n - i, "host:", 5)) {
             std::size_t h = i;
             std::size_t v = h + 5;
             while (v < n && (p[v] == ' ' || p[v] == '\t')) {
@@ -78,6 +80,7 @@ HttpRequest parse_http_request(const std::uint8_t* p, std::size_t n) {
                 return out;
             }
         }
+        ++i;
     }
 
     return out;

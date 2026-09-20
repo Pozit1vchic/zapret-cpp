@@ -27,6 +27,31 @@ static void push16(std::vector<std::uint8_t>& v, std::uint16_t x) {
     v.push_back(static_cast<std::uint8_t>(x & 0xff));
 }
 
+static std::vector<std::uint8_t> build_ipv4_tcp(std::uint16_t frag_off,
+                                                const std::vector<std::uint8_t>& payload) {
+    std::vector<std::uint8_t> p;
+    p.push_back(0x45);
+    p.push_back(0);
+    push16(p, static_cast<std::uint16_t>(20 + 20 + payload.size()));
+    push16(p, 0x1234);
+    push16(p, frag_off);
+    p.push_back(64);
+    p.push_back(6);
+    push16(p, 0);
+    p.insert(p.end(), {192, 168, 1, 1});
+    p.insert(p.end(), {93, 184, 216, 34});
+    push16(p, 50000);
+    push16(p, 443);
+    p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0x64);
+    p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(1);
+    p.push_back(0x50); p.push_back(0x18);
+    push16(p, 65535);
+    push16(p, 0);
+    push16(p, 0);
+    p.insert(p.end(), payload.begin(), payload.end());
+    return p;
+}
+
 static std::vector<std::uint8_t> build_client_hello(const std::string& host) {
     std::vector<std::uint8_t> body;
     body.push_back(0x03);
@@ -161,6 +186,21 @@ static void test_http_parsing() {
     std::vector<std::uint8_t> junk(32, 0x41);
     zc::HttpRequest h3 = zc::parse_http_request(junk.data(), junk.size());
     check(!h3.valid, "non-http data rejected");
+
+    std::string no_host = "GET / HTTP/1.1\r\nX-Foo: bar\r\n\r\n";
+    std::vector<std::uint8_t> b4(no_host.begin(), no_host.end());
+    zc::HttpRequest h4 = zc::parse_http_request(b4.data(), b4.size());
+    check(!h4.valid, "request without Host header rejected");
+
+    std::string exact = "GET / HTTP/1.1\r\nHost: a.b";
+    std::vector<std::uint8_t> b5(exact.begin(), exact.end());
+    zc::HttpRequest h5 = zc::parse_http_request(b5.data(), b5.size());
+    check(h5.valid && h5.host == "a.b", "host at end of buffer without CRLF parsed");
+
+    std::string trailing_cr = "GET / HTTP/1.1\r\nHost: a.b\r";
+    std::vector<std::uint8_t> b6(trailing_cr.begin(), trailing_cr.end());
+    zc::HttpRequest h6 = zc::parse_http_request(b6.data(), b6.size());
+    check(h6.valid && h6.host == "a.b", "host terminated by lone CR parsed");
 }
 
 static void test_quic_detection() {
@@ -210,8 +250,8 @@ static void test_quic_detection() {
 static void test_flow_cache() {
     zc::FlowCache cache(4);
     zc::FlowKey a;
-    a.src = 1;
-    a.dst = 2;
+    a.src[15] = 1;
+    a.dst[15] = 2;
     a.sport = 50000;
     a.dport = 443;
     a.proto = 6;
@@ -224,8 +264,12 @@ static void test_flow_cache() {
     check(!cache.seen_and_mark(b, 1002), "different source port is a new flow");
 
     zc::FlowKey c = a;
-    c.dst = 3;
+    c.dst[15] = 3;
     check(!cache.seen_and_mark(c, 1003), "different destination is a new flow");
+
+    zc::FlowKey d = a;
+    d.src[0] = 0xab;
+    check(!cache.seen_and_mark(d, 1004), "differing high ipv6 bytes are a new flow");
 
     zc::FlowCache cap(2);
     zc::FlowKey f1;
@@ -240,6 +284,65 @@ static void test_flow_cache() {
     check(cap.size() <= 4, "cache respects capacity bound");
 }
 
+static void test_ip_fragments_rejected() {
+    std::vector<std::uint8_t> payload(40, 0x41);
+
+    zc::Packet plain;
+    plain.bytes = build_ipv4_tcp(0x0000, payload);
+    check(plain.parse() && plain.is_tcp(), "unfragmented packet parses");
+
+    zc::Packet first;
+    first.bytes = build_ipv4_tcp(0x2000, payload);
+    check(!first.parse(), "first fragment (MF set) rejected");
+
+    zc::Packet later;
+    later.bytes = build_ipv4_tcp(0x0001, payload);
+    check(!later.parse(), "non-zero fragment offset rejected");
+
+    zc::Packet df;
+    df.bytes = build_ipv4_tcp(0x4000, payload);
+    check(df.parse() && df.is_tcp(), "DF-only packet still accepted");
+}
+
+static void test_badseq_trick() {
+    std::vector<std::uint8_t> payload(40, 0x42);
+    zc::Packet pkt;
+    pkt.bytes = build_ipv4_tcp(0x0000, payload);
+    pkt.parse();
+
+    zc::TlsClientHello tls;
+    zc::Config cfg;
+    cfg.split_pos = 10;
+
+    cfg.strategy = zc::Strategy::Disorder;
+    cfg.fooling_badseq = true;
+    cfg.repeats = 1;
+    auto out = zc::apply_desync(pkt, tls, cfg);
+    check(out.size() == 3, "disorder+badseq adds a trick packet");
+    check(out[0].trick, "badseq trick packet is marked trick");
+    check(!out[1].trick && !out[2].trick, "real segments are not trick packets");
+
+    cfg.fooling_badseq = false;
+    out = zc::apply_desync(pkt, tls, cfg);
+    check(out.size() == 2, "disorder without badseq has just two segments");
+
+    cfg.strategy = zc::Strategy::FakeMultidisorder;
+    cfg.repeats = 3;
+    cfg.fooling_badseq = true;
+    out = zc::apply_desync(pkt, tls, cfg);
+    int tricks = 0;
+    int reals = 0;
+    for (const auto& p : out) {
+        if (p.trick) {
+            ++tricks;
+        } else {
+            ++reals;
+        }
+    }
+    check(tricks == 3, "repeats apply to the trick packet");
+    check(reals >= 2, "real segments are not duplicated by repeats");
+}
+
 int main() {
     test_ipv4_checksum();
     test_tls_sni();
@@ -248,6 +351,8 @@ int main() {
     test_http_parsing();
     test_quic_detection();
     test_flow_cache();
+    test_ip_fragments_rejected();
+    test_badseq_trick();
 
     if (g_fail == 0) {
         std::printf("\nall logic tests passed\n");

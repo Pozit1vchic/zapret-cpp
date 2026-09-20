@@ -73,6 +73,7 @@ class Packet {
 public:
     std::vector<std::uint8_t> bytes;
     AddressTag                addr{};
+    bool                      trick = false;
 
     bool parse();
 

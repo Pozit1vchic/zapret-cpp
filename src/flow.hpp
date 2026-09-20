@@ -7,15 +7,22 @@
 namespace zc {
 
 struct FlowKey {
-    std::uint32_t src = 0;
-    std::uint32_t dst = 0;
+    std::uint8_t  src[16] = {};
+    std::uint8_t  dst[16] = {};
     std::uint16_t sport = 0;
     std::uint16_t dport = 0;
     std::uint8_t  proto = 0;
 
     bool operator==(const FlowKey& o) const {
-        return src == o.src && dst == o.dst && sport == o.sport && dport == o.dport &&
-               proto == o.proto;
+        if (sport != o.sport || dport != o.dport || proto != o.proto) {
+            return false;
+        }
+        for (int i = 0; i < 16; ++i) {
+            if (src[i] != o.src[i] || dst[i] != o.dst[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 };
 
@@ -26,8 +33,20 @@ struct FlowKeyHash {
             h ^= static_cast<std::size_t>(v);
             h *= 1099511628211ull;
         };
-        mix(k.src);
-        mix(k.dst);
+        for (int i = 0; i < 16; i += 4) {
+            std::uint32_t w = (static_cast<std::uint32_t>(k.src[i]) << 24) |
+                              (static_cast<std::uint32_t>(k.src[i + 1]) << 16) |
+                              (static_cast<std::uint32_t>(k.src[i + 2]) << 8) |
+                              static_cast<std::uint32_t>(k.src[i + 3]);
+            mix(w);
+        }
+        for (int i = 0; i < 16; i += 4) {
+            std::uint32_t w = (static_cast<std::uint32_t>(k.dst[i]) << 24) |
+                              (static_cast<std::uint32_t>(k.dst[i + 1]) << 16) |
+                              (static_cast<std::uint32_t>(k.dst[i + 2]) << 8) |
+                              static_cast<std::uint32_t>(k.dst[i + 3]);
+            mix(w);
+        }
         mix(k.sport);
         mix(k.dport);
         mix(k.proto);

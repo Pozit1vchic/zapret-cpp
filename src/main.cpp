@@ -52,18 +52,20 @@ zc::FlowKey make_flow_key(const zc::Packet& pkt) {
     k.proto = 6;
     if (pkt.is_ipv4() && pkt.ip() != nullptr) {
         const zc::IpHdr* ip = pkt.ip();
-        k.src = ip->src;
-        k.dst = ip->dst;
+        k.src[12] = static_cast<std::uint8_t>(ip->src & 0xff);
+        k.src[13] = static_cast<std::uint8_t>((ip->src >> 8) & 0xff);
+        k.src[14] = static_cast<std::uint8_t>((ip->src >> 16) & 0xff);
+        k.src[15] = static_cast<std::uint8_t>((ip->src >> 24) & 0xff);
+        k.dst[12] = static_cast<std::uint8_t>(ip->dst & 0xff);
+        k.dst[13] = static_cast<std::uint8_t>((ip->dst >> 8) & 0xff);
+        k.dst[14] = static_cast<std::uint8_t>((ip->dst >> 16) & 0xff);
+        k.dst[15] = static_cast<std::uint8_t>((ip->dst >> 24) & 0xff);
     } else if (pkt.is_ipv6() && pkt.ip6() != nullptr) {
         const zc::Ipv6Hdr* ip = pkt.ip6();
-        k.src = (static_cast<std::uint32_t>(ip->src[12]) << 24) |
-                (static_cast<std::uint32_t>(ip->src[13]) << 16) |
-                (static_cast<std::uint32_t>(ip->src[14]) << 8) |
-                static_cast<std::uint32_t>(ip->src[15]);
-        k.dst = (static_cast<std::uint32_t>(ip->dst[12]) << 24) |
-                (static_cast<std::uint32_t>(ip->dst[13]) << 16) |
-                (static_cast<std::uint32_t>(ip->dst[14]) << 8) |
-                static_cast<std::uint32_t>(ip->dst[15]);
+        for (int i = 0; i < 16; ++i) {
+            k.src[i] = ip->src[i];
+            k.dst[i] = ip->dst[i];
+        }
     }
     const zc::TcpHdr* t = pkt.tcp();
     if (t != nullptr) {

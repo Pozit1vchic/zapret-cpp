@@ -28,7 +28,9 @@ bool Packet::parse() {
         }
         std::uint16_t frag = (static_cast<std::uint16_t>(h->frag_off >> 8) |
                               static_cast<std::uint16_t>(h->frag_off << 8));
-        if ((frag & 0x1fff) != 0) {
+        // Reject any fragment: MF set (0x2000) or non-zero offset (0x1fff).
+        // Only an unfragmented datagram carries a complete L4 message.
+        if ((frag & 0x3fff) != 0) {
             return false;
         }
         proto = h->proto;
