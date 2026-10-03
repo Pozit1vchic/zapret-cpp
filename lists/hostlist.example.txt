@@ -1,0 +1,3 @@
+# Use with: zapret-cpp.exe --hostlist=lists/hostlist.example.txt
+# This option implies --listed, so only built-ins, rules and entries here are targeted.
+# example.com

@@ -1,191 +1,149 @@
-# zapret-cpp
+# zapret-cpp 2.0
 
-Универсальный обход DPI на C++ через WinDivert. Один exe, работает из коробки:
-перехватывает **TCP+TLS, HTTP и QUIC (HTTP/3)** и десинхронизирует трафик так,
-чтобы DPI не собрал домен/SNI. Знакомые сервисы получают подобранную стратегию,
-всё остальное (включая любые нейросети) — универсальный fallback.
+Native Windows DPI-desynchronization engine written in C++17 and built around WinDivert.
+It is designed around **generic web traffic first**: unknown TLS/HTTP hosts use a fallback
+strategy, while built-in profiles and user rules can tune individual domains without
+recompiling the program.
 
-Основано на техниках из
-[Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube).
+> This project is independent from Flowseal/zapret-discord-youtube and bol-van/zapret.
+> It uses similar DPI-desynchronization ideas, but this repository contains its own C++
+> packet/TLS/HTTP/QUIC parsing and strategy implementation.
 
-## Что обходит
+## What changed in 2.0
 
-- **TLS (HTTPS)** — Google, YouTube, Discord (+CDN, голос), Telegram, Instagram,
-  Facebook, Twitter/X, Reddit, GitHub и др.
-- **Все нейросети/AI** — OpenAI/ChatGPT, Anthropic/Claude, Gemini/DeepMind,
-  Copilot/Bing, Groq, Perplexity, xAI/Grok, Mistral, HuggingFace, DeepSeek,
-  Midjourney, ElevenLabs, Character.AI, Poe.
-- **QUIC (HTTP/3)** — UDP/443 initial-пакеты (fake + real).
-- **Plain HTTP** — порт 80.
-- Любой прочий хост — универсальным fallback'ом (`--all`, включён по умолчанию).
+- Generic TLS/HTTP fallback for unknown websites instead of requiring a fixed site list.
+- External `config/rules.txt`, hostlists and excludes with domain-suffix matching.
+- Longest-suffix rule/profile selection, so specialized domains beat broad ecosystems.
+- Correct TLS ClientHello bounds checking and safe handling of partial ClientHello records.
+- HTTP parser walks real header boundaries and normalizes hostname, port and bracketed IPv6.
+- QUIC Initial parser uses RFC variable-length integers and distinguishes QUIC v1/v2 types.
+- IPv4 total-length validation, IPv6 extension-header walking and UDP length validation.
+- Fixed flow cache: it now actually suppresses repeat desync of the same TCP flow and evicts
+  the oldest entry instead of clearing the entire cache.
+- Fixed WinDivert error handling: Windows `GetLastError()` is used; no nonexistent
+  `WinDivertGetLastError` call or null function-pointer crash.
+- Full opaque `WINDIVERT_ADDRESS` metadata is preserved for reinjection.
+- Ctrl+C shuts down a blocking WinDivert receive cleanly.
+- `fake-auto` chooses a deterministic decoy host; `--fake-rnd` changes only
+  `ClientHello.random` instead of corrupting TLS framing.
+- Segment flags are corrected: FIN/PSH stay on the logical last real segment.
+- Built-in UAC manifest requests administrator rights.
+- Core is a separate portable library; tests build and run on non-Windows systems too.
 
-## Стратегии
+## Protocol scope
 
-- **split** — разрезать ClientHello на два TCP-сегмента;
-- **disorder** — те же сегменты, но второй уходит первым;
-- **multidisorder** — 2–8 сегментов в обратном порядке;
-- **fake** — фейковый пакет с низким TTL (умрёт в пути, DPI «съест» подмену);
-- **fake-multidisorder** — комбо (основной режим);
-- **fake-auto** — fake с автоподбором decoy-SNI;
-- fooling **badseq** — битый TCP seq на трюк-сегменте;
-- **QUIC fake** — дубль UDP-пакета с мусором и низким TTL.
+| Traffic | Default behavior |
+|---|---|
+| TLS over TCP | Generic fallback for any recognizable TLS ClientHello; clear SNI enables domain rules/profiles |
+| HTTP/1.x | Generic fallback for any request with a Host header |
+| QUIC/HTTP3 UDP 443 | Generic QUIC v1/v2 Initial desync |
+| TLS with ECH/no clear SNI | Generic fallback still applies, but hostname-specific rules cannot be selected |
+| Arbitrary non-web protocols | Passed through |
 
-## Зависимости
+`--listed` intentionally disables QUIC handling because this engine does not decrypt QUIC/TLS
+and therefore cannot know the hostname safely in listed-only mode.
 
-- MinGW-w64 / MSYS2 (`g++`, `cmake`, `ninja`).
-- WinDivert SDK в `third_party/windivert/`:
-  ```
-  third_party/windivert/
-    include/windivert.h
-    x64/WinDivert.dll
-    x64/WinDivert64.sys
-  ```
-  Скачать: https://github.com/basil00/WinDivert/releases (проверено на 2.2.2-A).
-  `.lib` не нужен — API грузится в рантайме через `LoadLibrary`.
+## Build on Windows
 
-> **GCC 16 / MinGW:** в `main.cpp` C++-заголовки (`<string>`, `<vector>`) идут
-> **до** `<windows.h>`. Иначе `windows.h` ломает libstdc++ сотнями ошибок.
+Requirements:
 
-## Сборка
+- Windows 10/11 x64
+- CMake 3.16+
+- Ninja (recommended)
+- A C++17 compiler (MSVC, MinGW-w64 or clang/llvm-mingw)
 
-Единый самодостаточный exe (статическая линковка, без libstdc++/libgcc в
-зависимостях; WinDivert грузится через `LoadLibrary`):
-
-```sh
-cmake -S . -B build -G Ninja
-cmake --build build
-```
-
-Тесты логики (без драйвера):
-
-```sh
-./build/logic_test.exe
-```
-
-## Релиз
-
-Одной командой собирается готовый архив для публикации:
+The WinDivert SDK needed at runtime is already under `third_party/windivert/`.
 
 ```powershell
-pwsh -File scripts/make-release.ps1 -Version v1.0.0
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-Результат в `dist/`: `zapret-cpp.exe` + `WinDivert.dll` + `WinDivert64.sys` +
-`README.md`, упакованные в `zapret-cpp-v1.0.0.zip`. Этот архив и выкладывай в
-GitHub Releases.
+For a ready-to-copy release directory and ZIP:
 
-## Запуск
-
-**Только от имени администратора** (WinDivert грузит драйвер). Рядом с exe
-обязательны `WinDivert.dll` и `WinDivert64.sys` — из релизного архива они уже
-рядом.
-
-> Запускай **двойным кликом** `zapret-cpp.exe` → откроется окно консоли со
-> статусом и логом обхода. Окно закроется только по `Ctrl+C` или закрытию.
-> Если exe не стартует и окно мигает — почти всегда это (1) отсутствие прав
-> администратора или (2) `WinDivert.dll`/`WinDivert64.sys` не лежат рядом с exe.
-
-```sh
-# работает из коробки: TLS+HTTP+QUIC, все хосты, авто-стратегии
-./zapret-cpp.exe
-
-# только известные сервисы (whitelist)
-./zapret-cpp.exe --listed
-
-# усилить под жёсткий DPI
-./zapret-cpp.exe --repeats=11 --badseq
-
-# одна стратегия на всех
-./zapret-cpp.exe --strategy=fake-auto
+```powershell
+pwsh -File scripts/make-release.ps1 -Version v2.0.0
 ```
 
-Флаги:
+The release script always builds from the current source; it never reuses the stale binary that
+was present in the old archive.
 
-| флаг | смысл | default |
-|------|-------|---------|
-| `--strategy` | force strategy (`split`\|`disorder`\|`multidisorder`\|`fake`\|`fake-multidisorder`\|`fake-auto`) | auto per-service |
-| `--split` | смещение разреза, `-1` = авто (середина SNI) | `-1` |
-| `--ttl` | TTL фейкового пакета | `4` |
-| `--fake-sni` | подменный хост для fake | `www.google.com` |
-| `--repeats` | повторы **трюк/fake**-пакетов (real-сегменты всегда один раз) | `1` |
-| `--segs` | сегментов multidisorder (2..8) | `4` |
-| `--badseq` | добавить decoy-пакет с битым seq (для split/disorder/multidisorder) | off |
-| `--fake-rnd` | рандомить байты фейка | off |
-| `--listed` | только известные сервисы | off (обход всего) |
-| `--no-quic` | выключить UDP/QUIC | off |
-| `--no-http` | выключить HTTP:80 | off |
-| `--no-fake-quic` | не слать fake QUIC Initial | off |
-| `--udplen` | padding UDP payload (+N / -N байт) | `0` |
-| `--verbose` | логировать каждый обработанный поток | off |
-| `--quiet` | вообще молчать, кроме ошибок | off |
-| `--list` | список сервисов | — |
-| `--filter` | свой WinDivert-фильтр | 443/80/8443 TCP + 443 UDP |
+## Quick start
 
-Останов — `Ctrl+C`.
+Run an elevated terminal:
 
-## Поведение (важно)
-
-Чтобы не ломать длительные соединения (Claude, стриминг, голосовые чаты), у
-заглушки есть защитные механизмы:
-
-1. **Обход один раз на соединение.** Десинхронизация применяется только к
-   *первому* ClientHello потока. Транзмиты и keep-alive пакеты идут как есть.
-   Без этого разрезали каждый пакет длинной сессии и соединение рвалось.
-2. **Пропуск фрагментированных ClientHello.** Chrome/Claude с post-quantum
-   (Kyber) шлют ClientHello на 2–3 сегмента. Если длина TLS-записи больше
-   размера сегмента, пакет отправляется **без изменений** (иначе разбиение
-   ломает рукопожатие).
-3. **Пропуск IP-фрагментов.** Любой фрагментированный IP-пакет (MF=1 или
-   ненулевое смещение) не содержит полного L4-сообщения и не десинхронизируется.
-4. **Повторы только для трюков.** `--repeats=N` дублирует лишь сгенерированные
-   fake/decoy-пакеты (низкий TTL или badseq). Реальные TCP-сегменты всегда
-   отправляются один раз — дублирование с тем же seq бессмысленно и ломает
-   порядок disorder.
-5. **`--badseq` для split/disorder.** Добавляет decoy-пакет с битым sequence
-   number перед реальными сегментами; реальные данные не портятся.
-6. **Лог ограничен по времени** (не чаще раза в 400 мс в обычном режиме), чтобы
-   блокирующий `printf` не забивал очередь WinDivert и не терял пакеты при
-   активном трафике. `--verbose` для диагностики, `--quiet` — тишина.
-
-Стратегии для AI-сервисов (Anthropic/Claude, Gemini, Copilot и др.) —
-консервативные: `disorder` без повторов и без badseq, потому что Cloudflare
-жестко реагирует на мульти-повторы и битый seq.
-
-## Структура
-
-```
-src/csum.*      контрольные суммы (RFC 1071)
-src/tls.*       парсер TLS ClientHello → SNI
-src/http.*      парсер HTTP-запроса → Host
-src/quic.*      парсер QUIC Initial + генератор фейкового Initial
-src/packet.*    разбор/пересборка IP/TCP/UDP, IPv4+IPv6
-src/desync.*    стратегии TCP/HTTP/QUIC десинхронизации
-src/services.*  список сервисов и per-service стратегии
-src/flow.*      кэш потоков (desync один раз на соединение)
-src/windivert_dyn.*  рантайм-загрузка WinDivert.dll (единый exe без import-DLL)
-src/main.cpp    WinDivert-цикл + CLI
-scripts/        make-release.ps1 (релизный архив), sync-to-d.ps1 (синк в D:)
-tests/          тесты (checksum, SNI, HTTP, QUIC, flow, матчинг сервисов)
+```powershell
+.\zapret-cpp.exe
 ```
 
-## QUIC (HTTP/3)
+Useful modes:
 
-Как и nfqws, обход **не расшифровывает** QUIC (payload защищён header
-protection'ом). Применяются те же приёмы, что в zapret:
+```powershell
+# inspect all outbound TCP payload ports instead of only common web ports
+.\zapret-cpp.exe --all-tcp
 
-- **fake QUIC Initial** — перед реальным пакетом отправляется структурно
-  корректный фейковый Initial (long header, version = v1, случайный DCID/SCID,
-  правдоподобная длина, низкий TTL). DPI разбирает фейк и ошибается.
-- **udplen** (`--udplen=N`) — добавить `N>0` нулевых байт к payload или срезать
-  `N<0`, чтобы сломать DPI, ориентирующийся на размеры пакетов.
+# force one strategy globally
+.\zapret-cpp.exe --strategy=fake-auto --badseq --repeats=2
 
-Парсер строгий: требует long header, тип Initial, ненулевую версию и корректные
-длины DCID/SCID/token. Short header (1-RTT) и мусор не трогаются.
+# listed-only mode: built-ins + rules + this hostlist
+.\zapret-cpp.exe --hostlist=lists\my-sites.txt
 
-## Ограничения
+# custom per-domain rules and excludes
+.\zapret-cpp.exe --rules=config\rules.txt --exclude=lists\exclude.txt
 
-- QUIC Initial **не расшифровывается** — hostname из CRYPTO-фрейма недоступен,
-  поэтому hostlist для QUIC не применяется (в zapret для этого есть режим с
-  ключами). Работает на уровне «фейк + реальный пакет».
-- Нет обхода по IP (`ipset`) — только по SNI/Host.
-- IPv6 поддержан в парсере, на живом трафике не тестировался.
+# local installation diagnostics
+.\zapret-cpp.exe --check
+```
+
+Use `--help` for every option and `--list` for built-in domain profiles.
+
+## Rules
+
+`config/rules.txt` is auto-loaded beside the executable. Syntax:
+
+```text
+DOMAIN STRATEGY [key=value ...]
+```
+
+Supported keys are `split`, `ttl`, `repeats`, `segs`, `badseq`, `rnd`, and `fake-sni`.
+The **longest matching suffix wins**.
+
+```text
+example.com fake-auto ttl=4 repeats=2 badseq=1
+video.example.com multidisorder segs=6 split=-1
+```
+
+Domain list files accept plain suffixes, `*.example.com`, `||example.com^`, and common hosts-file
+forms such as `0.0.0.0 example.com`.
+
+## Strategies
+
+- `split` — send the real TCP payload in two in-order pieces.
+- `disorder` — send the second real segment before the first.
+- `multidisorder` — split into 2–16 real segments and transmit in reverse order.
+- `fake` — send a low-TTL/bad-sequence decoy before the real packet.
+- `fake-multidisorder` — decoy plus multidisorder real payload.
+- `fake-auto` — same pipeline with an automatically selected syntactically valid decoy SNI.
+
+No single strategy is guaranteed to work against every DPI implementation or ISP. Start with the
+default, then tune a domain in `config/rules.txt` if a particular network needs a different method.
+
+## Safety / operational notes
+
+- `--filter` is an advanced raw WinDivert filter override. A bad filter can capture much more
+  traffic than intended.
+- Low fake TTL is topology-dependent. If the decoy reaches the real server it can break a
+  connection; `badseq=1` can provide an additional rejection mechanism.
+- This is packet manipulation software. Keep a second elevated terminal available so you can
+  terminate it if a custom strategy/filter behaves badly.
+- Use it only where you are authorized to alter traffic on the machine/network.
+
+## Tests
+
+The current logic suite covers TLS, partial ClientHello, fake SNI construction, HTTP, QUIC v1/v2,
+flow cache behavior, IPv4 fragmentation rejection, IPv6 extension headers, checksums, domain rules,
+service specificity and desync packet generation. It is also run under AddressSanitizer and
+UndefinedBehaviorSanitizer during local audit.
+
+See `AUDIT.md` for the detailed repair list and remaining limitations.

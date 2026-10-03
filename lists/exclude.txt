@@ -1,0 +1,4 @@
+# Domains that zapret-cpp must never desynchronize.
+# Plain domains, *.domain forms, Adblock-style ||domain^ and hosts-file lines are accepted.
+#
+# banking.example

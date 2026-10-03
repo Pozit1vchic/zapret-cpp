@@ -1,0 +1,7 @@
+# Per-domain overrides. Longest suffix wins.
+# Format:
+# domain strategy [split=N] [ttl=N] [repeats=N] [segs=N] [badseq=0|1] [rnd=0|1] [fake-sni=HOST]
+#
+# Examples (disabled):
+# example.com fake-auto ttl=4 repeats=2 badseq=1
+# video.example.net multidisorder segs=6 split=-1

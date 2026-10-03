@@ -1,11 +1,12 @@
-# build output
+# Build output
 build/
+build-*/
 dist/
 cmake-build-*/
 out/
 bin/
 
-# binaries / objects
+# Compiler/linker output
 *.exe
 *.dll
 *.sys
@@ -20,34 +21,32 @@ bin/
 *.dmp
 *.stackdump
 
-# vendored SDK (WinDivert) - never commit
-third_party/
+# The WinDivert SDK/runtime in third_party/ is intentionally vendored.
+!third_party/windivert/x64/WinDivert.dll
+!third_party/windivert/x64/WinDivert64.sys
+!third_party/windivert/x64/WinDivert.lib
 
-# IDE / editor
+# IDE/editor
 .vscode/
 .idea/
+.vs/
 *.swp
 *.swo
 *~
-.vs/
 
-# CMake
+# CMake / Ninja
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
 compile_commands.json
-
-# Ninja
 .ninja_deps
 .ninja_log
 build.ninja
 
-# logs and runtime junk
+# Runtime/log junk
 *.log
 zapret-cpp.log
-verified_key.txt
-infinity_key.txt
 
 # OS
 Thumbs.db
